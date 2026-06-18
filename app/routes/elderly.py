@@ -70,6 +70,15 @@ def update_elderly(elderly_id: int, profile_update: ElderlyProfileUpdate, db: Se
         return error_response(code=404, message="老人档案不存在")
     
     update_data = profile_update.model_dump(exclude_unset=True)
+    
+    if "id_card" in update_data and update_data["id_card"]:
+        existing = db.query(ElderlyProfile).filter(
+            ElderlyProfile.id_card == update_data["id_card"],
+            ElderlyProfile.id != elderly_id
+        ).first()
+        if existing:
+            return error_response(code=400, message="身份证号已被其他档案使用")
+    
     for key, value in update_data.items():
         setattr(profile, key, value)
     

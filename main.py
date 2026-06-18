@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError, HTTPException
+from fastapi.responses import JSONResponse
 from app.database import init_db
 from app.routes.elderly import router as elderly_router
 from app.routes.orders import router as orders_router
@@ -45,6 +47,49 @@ async def health_check():
         "message": "success",
         "data": {"status": "healthy"}
     }
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    error_details = []
+    for error in errors:
+        loc = " -> ".join([str(x) for x in error.get("loc", [])])
+        msg = error.get("msg", "")
+        error_details.append(f"{loc}: {msg}")
+    message = "参数校验失败: " + "; ".join(error_details) if error_details else "参数校验失败"
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": 400,
+            "message": message,
+            "data": None
+        }
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": exc.status_code,
+            "message": exc.detail,
+            "data": None
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": 500,
+            "message": f"服务器内部错误: {str(exc)}",
+            "data": None
+        }
+    )
 
 
 app.include_router(elderly_router)

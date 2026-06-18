@@ -90,6 +90,21 @@ def list_orders(
     end_date: Optional[str] = Query(None, description="结束日期"),
     db: Session = Depends(get_db)
 ):
+    now = datetime.now()
+    pending_orders = db.query(WorkOrder).filter(
+        WorkOrder.status.in_([OrderStatus.PENDING, OrderStatus.ASSIGNED, OrderStatus.IN_PROGRESS])
+    ).all()
+    for order in pending_orders:
+        if now > order.appointment_end:
+            timeout_delta = now - order.appointment_end
+            timeout_hours = round(timeout_delta.total_seconds() / 3600, 2)
+            order.is_timeout = 1
+            order.timeout_hours = timeout_hours
+        else:
+            order.is_timeout = 0
+            order.timeout_hours = 0
+    db.commit()
+    
     query = db.query(WorkOrder)
     
     if elderly_id:
@@ -112,13 +127,10 @@ def list_orders(
     
     items = []
     for order in orders:
-        check_timeout(db, order)
         elderly = db.query(ElderlyProfile).filter(ElderlyProfile.id == order.elderly_id).first()
         order_dict = orm_to_dict(order)
         order_dict["elderly_name"] = elderly.name if elderly else ""
         items.append(order_dict)
-    
-    db.commit()
     
     return success_response(data={
         "total": total,
