@@ -6,11 +6,12 @@ from app.database import init_db
 from app.routes.elderly import router as elderly_router
 from app.routes.orders import router as orders_router
 from app.routes.aggregation import router as aggregation_router
+from app.routes.supervision import router as supervision_router
 
 app = FastAPI(
     title="社区助老服务工单归档与进度聚合 API 服务",
-    description="社区工作人员创建工单时登记老人基础信息、服务类型、预约时段、风险备注和联系人，占位接单人员回传到达时间、处理摘要和未完成原因，服务端负责聚合同一老人近期服务记录、识别重复诉求和超时未闭环工单，并生成后续跟进建议。",
-    version="1.0.0"
+    description="社区助老服务闭环督办与风险升级系统：支持服务类型级SLA配置、社区级节假日/工作时段扣除规则、重复诉求合并建议、督办记录、人工确认升级、跟进计划和回访结果归档；系统可按同一老人、同类服务、近7/15/30天窗口识别疑似重复诉求并生成可确认的合并建议；对超时未闭环工单按风险等级、超时时长、历史未完成次数自动计算督办优先级，并生成下一步跟进建议。",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -95,3 +96,4 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(elderly_router)
 app.include_router(orders_router)
 app.include_router(aggregation_router)
+app.include_router(supervision_router)

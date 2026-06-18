@@ -1,8 +1,9 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date, time
 from app.models import (
-    ElderlyGender, OrderStatus, ServiceType, RiskLevel, ProgressType
+    ElderlyGender, OrderStatus, ServiceType, RiskLevel, ProgressType,
+    MergeStatus, SupervisionStatus, VisitStatus, VisitResult
 )
 
 
@@ -132,6 +133,15 @@ class WorkOrderResponse(BaseModel):
     updated_at: datetime
     closed_at: Optional[datetime]
     follow_up_suggestion: Optional[str]
+    sla_deadline: Optional[datetime]
+    sla_achieved: Optional[bool]
+    supervision_priority_score: Optional[float]
+    supervision_risk_level: Optional[RiskLevel]
+    historical_incomplete_count: Optional[int]
+    is_master_order: Optional[bool]
+    master_order_id: Optional[int]
+    manually_escalated: Optional[bool]
+    escalation_reason: Optional[str]
 
     class Config:
         from_attributes = True
@@ -211,3 +221,258 @@ class StatisticsResponse(BaseModel):
     duplicate_request_rate: float
     timeout_distribution: List[dict]
     high_frequency_elderly: List[dict]
+
+
+class SLAConfigBase(BaseModel):
+    service_type: ServiceType
+    response_hours: float = Field(2.0, gt=0, description="响应时限(小时)")
+    resolution_hours: float = Field(24.0, gt=0, description="解决时限(小时)")
+    first_response_hours: Optional[float] = Field(1.0, gt=0, description="首次响应时限(小时)")
+    description: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = True
+
+
+class SLAConfigCreate(SLAConfigBase):
+    pass
+
+
+class SLAConfigUpdate(BaseModel):
+    response_hours: Optional[float] = Field(None, gt=0)
+    resolution_hours: Optional[float] = Field(None, gt=0)
+    first_response_hours: Optional[float] = Field(None, gt=0)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class SLAConfigResponse(SLAConfigBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CommunityCalendarBase(BaseModel):
+    community: str = Field(..., max_length=100)
+    work_start_time: Optional[time] = "08:00:00"
+    work_end_time: Optional[time] = "18:00:00"
+    work_days: Optional[str] = Field("1,2,3,4,5", max_length=20)
+    exclude_holidays: Optional[bool] = True
+
+
+class CommunityCalendarCreate(CommunityCalendarBase):
+    pass
+
+
+class CommunityCalendarUpdate(BaseModel):
+    work_start_time: Optional[time] = None
+    work_end_time: Optional[time] = None
+    work_days: Optional[str] = None
+    exclude_holidays: Optional[bool] = None
+
+
+class CommunityCalendarResponse(CommunityCalendarBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class HolidayRecordBase(BaseModel):
+    community: Optional[str] = Field(None, max_length=100)
+    holiday_date: date
+    holiday_name: Optional[str] = Field(None, max_length=100)
+    is_workday: Optional[bool] = False
+
+
+class HolidayRecordCreate(HolidayRecordBase):
+    pass
+
+
+class HolidayRecordUpdate(BaseModel):
+    holiday_name: Optional[str] = None
+    is_workday: Optional[bool] = None
+
+
+class HolidayRecordResponse(HolidayRecordBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DuplicateSuggestionBase(BaseModel):
+    master_order_id: int
+    slave_order_id: int
+    time_window_days: int = Field(7, ge=1, le=365)
+
+
+class DuplicateSuggestionConfirm(BaseModel):
+    confirmed_by: Optional[str] = Field(None, max_length=100)
+
+
+class DuplicateSuggestionReject(BaseModel):
+    reject_reason: str = Field(..., description="拒绝原因")
+
+
+class DuplicateSuggestionResponse(BaseModel):
+    id: int
+    master_order_id: int
+    slave_order_id: int
+    elderly_id: int
+    elderly_name: Optional[str] = None
+    service_type: ServiceType
+    time_window_days: int
+    similarity_score: float
+    status: MergeStatus
+    suggested_by: Optional[str]
+    confirmed_by: Optional[str]
+    confirmed_at: Optional[datetime]
+    reject_reason: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    master_order_no: Optional[str] = None
+    slave_order_no: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SupervisionRecordBase(BaseModel):
+    work_order_id: int
+    supervisor_name: Optional[str] = Field(None, max_length=100)
+    supervisor_role: Optional[str] = Field(None, max_length=50)
+    assignee_name: Optional[str] = Field(None, max_length=100)
+    assignee_phone: Optional[str] = Field(None, max_length=20)
+    supervision_remark: str = Field(..., description="督办备注")
+    next_follow_up_time: Optional[datetime] = None
+    is_visited: Optional[bool] = False
+    no_follow_up_needed: Optional[bool] = False
+    no_follow_up_reason: Optional[str] = None
+    risk_level_before: Optional[RiskLevel] = None
+    risk_level_after: Optional[RiskLevel] = None
+    status: Optional[SupervisionStatus] = SupervisionStatus.PENDING
+
+
+class SupervisionRecordCreate(SupervisionRecordBase):
+    pass
+
+
+class SupervisionRecordUpdate(BaseModel):
+    supervisor_name: Optional[str] = None
+    supervisor_role: Optional[str] = None
+    assignee_name: Optional[str] = None
+    assignee_phone: Optional[str] = None
+    supervision_remark: Optional[str] = None
+    next_follow_up_time: Optional[datetime] = None
+    is_visited: Optional[bool] = None
+    no_follow_up_needed: Optional[bool] = None
+    no_follow_up_reason: Optional[str] = None
+    risk_level_before: Optional[RiskLevel] = None
+    risk_level_after: Optional[RiskLevel] = None
+    status: Optional[SupervisionStatus] = None
+
+
+class SupervisionRecordResponse(SupervisionRecordBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FollowUpPlanBase(BaseModel):
+    work_order_id: int
+    plan_content: str = Field(..., description="计划内容")
+    planned_time: datetime
+    responsible_person: Optional[str] = Field(None, max_length=100)
+    responsible_phone: Optional[str] = Field(None, max_length=20)
+    priority: Optional[int] = Field(1, ge=1, le=5)
+    created_by: Optional[str] = Field(None, max_length=100)
+
+
+class FollowUpPlanCreate(FollowUpPlanBase):
+    pass
+
+
+class FollowUpPlanUpdate(BaseModel):
+    plan_content: Optional[str] = None
+    planned_time: Optional[datetime] = None
+    responsible_person: Optional[str] = None
+    responsible_phone: Optional[str] = None
+    priority: Optional[int] = Field(None, ge=1, le=5)
+    is_completed: Optional[bool] = None
+    completed_time: Optional[datetime] = None
+    completed_remark: Optional[str] = None
+
+
+class FollowUpPlanResponse(FollowUpPlanBase):
+    id: int
+    is_completed: bool
+    completed_time: Optional[datetime]
+    completed_remark: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VisitRecordBase(BaseModel):
+    work_order_id: int
+    visit_time: datetime
+    visitor_name: Optional[str] = Field(None, max_length=100)
+    visitor_role: Optional[str] = Field(None, max_length=50)
+    visit_status: Optional[VisitStatus] = VisitStatus.SCHEDULED
+    visit_result: Optional[VisitResult] = None
+    elderly_present: Optional[bool] = True
+    visit_content: Optional[str] = None
+    satisfaction_score: Optional[int] = Field(None, ge=1, le=5)
+    feedback: Optional[str] = None
+    next_visit_suggestion: Optional[str] = None
+    archived: Optional[bool] = False
+
+
+class VisitRecordCreate(VisitRecordBase):
+    pass
+
+
+class VisitRecordUpdate(BaseModel):
+    visit_time: Optional[datetime] = None
+    visitor_name: Optional[str] = None
+    visitor_role: Optional[str] = None
+    visit_status: Optional[VisitStatus] = None
+    visit_result: Optional[VisitResult] = None
+    elderly_present: Optional[bool] = None
+    visit_content: Optional[str] = None
+    satisfaction_score: Optional[int] = Field(None, ge=1, le=5)
+    feedback: Optional[str] = None
+    next_visit_suggestion: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+class VisitRecordResponse(VisitRecordBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrderEscalationRequest(BaseModel):
+    escalation_reason: str = Field(..., description="升级原因")
+    operator_name: Optional[str] = Field(None, max_length=100)
+
+
+class AdvancedStatisticsRequest(BaseModel):
+    start_date: Optional[str] = Field(None, description="开始日期 YYYY-MM-DD")
+    end_date: Optional[str] = Field(None, description="结束日期 YYYY-MM-DD")
+    community: Optional[str] = Field(None, description="社区")
+    service_type: Optional[ServiceType] = Field(None, description="服务类型")
+    risk_level: Optional[RiskLevel] = Field(None, description="风险等级")

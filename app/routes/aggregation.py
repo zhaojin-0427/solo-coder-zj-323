@@ -7,7 +7,9 @@ from collections import Counter, defaultdict
 from app.database import get_db
 from app.models import (
     WorkOrder, ElderlyProfile, ProgressRecord,
-    OrderStatus, ServiceType, RiskLevel
+    OrderStatus, ServiceType, RiskLevel,
+    DuplicateSuggestion, MergeStatus, SupervisionRecord,
+    SLAConfig
 )
 from app.utils import success_response, error_response, ApiResponse, orm_to_dict
 
@@ -402,4 +404,299 @@ def get_follow_up_suggestions(
     return success_response(data={
         "total": len(suggestions_list),
         "items": suggestions_list
+    })
+
+
+@router.get("/advanced-statistics", response_model=ApiResponse)
+def get_advanced_statistics(
+    start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
+    community: Optional[str] = Query(None, description="社区筛选"),
+    service_type: Optional[str] = Query(None, description="服务类型筛选"),
+    risk_level: Optional[str] = Query(None, description="风险等级筛选"),
+    db: Session = Depends(get_db)
+):
+    now = datetime.now()
+
+    if start_date:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    else:
+        start_dt = now - timedelta(days=30)
+
+    if end_date:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+    else:
+        end_dt = now + timedelta(days=1)
+
+    order_query = db.query(WorkOrder).filter(
+        WorkOrder.created_at >= start_dt,
+        WorkOrder.created_at < end_dt
+    )
+
+    if community:
+        order_query = order_query.join(ElderlyProfile).filter(ElderlyProfile.community == community)
+    if service_type:
+        order_query = order_query.filter(WorkOrder.service_type == service_type)
+
+    all_orders = order_query.all()
+
+    for order in all_orders:
+        if order.status in [OrderStatus.PENDING, OrderStatus.ASSIGNED, OrderStatus.IN_PROGRESS]:
+            if now > order.appointment_end:
+                time_diff = now - order.appointment_end
+                order.is_timeout = 1
+                order.timeout_hours = round(time_diff.total_seconds() / 3600, 2)
+            else:
+                order.is_timeout = 0
+                order.timeout_hours = 0
+
+    db.commit()
+
+    total_orders = len(all_orders)
+    completed_orders = [o for o in all_orders if o.status in [OrderStatus.COMPLETED, OrderStatus.CLOSED]]
+    completed_count = len(completed_orders)
+
+    sla_deadline_count = len([o for o in completed_orders if o.sla_deadline])
+    sla_achieved_count = len([o for o in completed_orders if o.sla_achieved == True])
+    sla_achievement_rate = round(sla_achieved_count / sla_deadline_count * 100, 2) if sla_deadline_count > 0 else 0
+
+    all_suggestions_query = db.query(DuplicateSuggestion).filter(
+        DuplicateSuggestion.created_at >= start_dt,
+        DuplicateSuggestion.created_at < end_dt
+    )
+    if community:
+        all_suggestions_query = all_suggestions_query.join(
+            ElderlyProfile, DuplicateSuggestion.elderly_id == ElderlyProfile.id
+        ).filter(ElderlyProfile.community == community)
+    all_suggestions = all_suggestions_query.all()
+
+    total_suggestions = len(all_suggestions)
+    confirmed_suggestions = len([s for s in all_suggestions if s.status == MergeStatus.CONFIRMED])
+    duplicate_confirmation_rate = round(
+        confirmed_suggestions / total_suggestions * 100, 2
+    ) if total_suggestions > 0 else 0
+
+    risk_distribution = []
+    for rl in [RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL]:
+        count = len([o for o in all_orders if o.supervision_risk_level == rl])
+        manually = len([o for o in all_orders if o.supervision_risk_level == rl and o.manually_escalated])
+        risk_distribution.append({
+            "risk_level": rl.value,
+            "order_count": count,
+            "manually_escalated_count": manually,
+            "percentage": round(count / total_orders * 100, 2) if total_orders > 0 else 0
+        })
+
+    supervision_query = db.query(SupervisionRecord).filter(
+        SupervisionRecord.created_at >= start_dt,
+        SupervisionRecord.created_at < end_dt
+    )
+    if community:
+        supervision_query = supervision_query.join(
+            WorkOrder, SupervisionRecord.work_order_id == WorkOrder.id
+        ).join(ElderlyProfile).filter(ElderlyProfile.community == community)
+    all_supervisions = supervision_query.all()
+
+    supervision_durations = []
+    for sr in all_supervisions:
+        if sr.status.value in ["resolved", "closed"] and sr.updated_at and sr.created_at:
+            duration = (sr.updated_at - sr.created_at).total_seconds() / 3600
+            supervision_durations.append(duration)
+
+    avg_supervision_hours = round(sum(supervision_durations) / len(supervision_durations), 2) if supervision_durations else 0
+    supervision_total = len(all_supervisions)
+    supervision_resolved = len([s for s in all_supervisions if s.status.value in ["resolved", "closed"]])
+
+    community_timeout_heatmap = []
+    community_orders = defaultdict(list)
+    for order in all_orders:
+        elderly = db.query(ElderlyProfile).filter(ElderlyProfile.id == order.elderly_id).first()
+        if elderly and elderly.community:
+            community_orders[elderly.community].append(order)
+
+    for comm, orders in community_orders.items():
+        total = len(orders)
+        timeout = len([o for o in orders if o.is_timeout == 1])
+        avg_timeout_hours = round(
+            sum([o.timeout_hours for o in orders if o.is_timeout == 1]) / timeout, 2
+        ) if timeout > 0 else 0
+        sla_met = len([o for o in orders if o.sla_achieved == True])
+        community_timeout_heatmap.append({
+            "community": comm,
+            "total_orders": total,
+            "timeout_orders": timeout,
+            "timeout_rate": round(timeout / total * 100, 2) if total > 0 else 0,
+            "avg_timeout_hours": avg_timeout_hours,
+            "sla_achieved_count": sla_met,
+            "sla_achievement_rate": round(sla_met / total * 100, 2) if total > 0 else 0,
+            "heat_level": "critical" if timeout >= 10 else ("high" if timeout >= 5 else ("medium" if timeout >= 2 else "low"))
+        })
+
+    community_timeout_heatmap.sort(key=lambda x: x["timeout_orders"], reverse=True)
+
+    high_risk_pending = []
+    pending_orders = [o for o in all_orders if o.status in [OrderStatus.PENDING, OrderStatus.ASSIGNED, OrderStatus.IN_PROGRESS]]
+
+    if risk_level:
+        pending_orders = [o for o in pending_orders if o.supervision_risk_level and o.supervision_risk_level.value == risk_level]
+    else:
+        pending_orders = [o for o in pending_orders if o.supervision_risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]]
+
+    pending_orders.sort(key=lambda x: x.supervision_priority_score or 0, reverse=True)
+
+    for order in pending_orders[:50]:
+        elderly = db.query(ElderlyProfile).filter(ElderlyProfile.id == order.elderly_id).first()
+
+        recent_supervisions = db.query(SupervisionRecord).filter(
+            SupervisionRecord.work_order_id == order.id
+        ).order_by(SupervisionRecord.created_at.desc()).limit(3).all()
+
+        high_risk_pending.append({
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "elderly_id": order.elderly_id,
+            "elderly_name": elderly.name if elderly else "",
+            "community": elderly.community if elderly else "",
+            "risk_level": elderly.risk_level.value if elderly and elderly.risk_level else None,
+            "service_type": order.service_type.value,
+            "status": order.status.value,
+            "appointment_end": order.appointment_end,
+            "is_timeout": order.is_timeout,
+            "timeout_hours": order.timeout_hours,
+            "supervision_priority_score": order.supervision_priority_score,
+            "supervision_risk_level": order.supervision_risk_level.value if order.supervision_risk_level else None,
+            "assignee_name": order.assignee_name,
+            "manually_escalated": order.manually_escalated,
+            "historical_incomplete_count": order.historical_incomplete_count,
+            "recent_supervision_count": len(recent_supervisions),
+            "last_supervision_time": recent_supervisions[0].created_at if recent_supervisions else None,
+            "follow_up_suggestion": order.follow_up_suggestion
+        })
+
+    service_type_sla_stats = []
+    for st in ServiceType:
+        type_orders = [o for o in all_orders if o.service_type == st]
+        type_completed = [o for o in type_orders if o.status in [OrderStatus.COMPLETED, OrderStatus.CLOSED]]
+        type_sla_met = len([o for o in type_completed if o.sla_achieved == True])
+        type_sla_total = len([o for o in type_completed if o.sla_deadline])
+
+        avg_hours = 0
+        if type_completed:
+            durations = []
+            for o in type_completed:
+                if o.completion_time and o.created_at:
+                    duration = (o.completion_time - o.created_at).total_seconds() / 3600
+                    durations.append(duration)
+            if durations:
+                avg_hours = round(sum(durations) / len(durations), 2)
+
+        service_type_sla_stats.append({
+            "service_type": st.value,
+            "total_orders": len(type_orders),
+            "completed_orders": len(type_completed),
+            "sla_achieved": type_sla_met,
+            "sla_total": type_sla_total,
+            "sla_achievement_rate": round(type_sla_met / type_sla_total * 100, 2) if type_sla_total > 0 else 0,
+            "avg_completion_hours": avg_hours,
+            "timeout_orders": len([o for o in type_orders if o.is_timeout == 1])
+        })
+
+    result = {
+        "statistic_range": {
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": (end_dt - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "filter_community": community,
+            "filter_service_type": service_type,
+            "filter_risk_level": risk_level
+        },
+        "total_orders": total_orders,
+        "completed_orders": completed_count,
+        "completion_rate": round(completed_count / total_orders * 100, 2) if total_orders > 0 else 0,
+        "sla_achievement_rate": sla_achievement_rate,
+        "sla_achieved_count": sla_achieved_count,
+        "sla_eligible_count": sla_deadline_count,
+        "duplicate_request_stats": {
+            "total_suggestions": total_suggestions,
+            "confirmed_suggestions": confirmed_suggestions,
+            "rejected_suggestions": len([s for s in all_suggestions if s.status == MergeStatus.REJECTED]),
+            "pending_suggestions": len([s for s in all_suggestions if s.status == MergeStatus.SUGGESTED]),
+            "confirmation_rate": duplicate_confirmation_rate
+        },
+        "risk_escalation_distribution": risk_distribution,
+        "supervision_stats": {
+            "total_supervisions": supervision_total,
+            "resolved_supervisions": supervision_resolved,
+            "resolution_rate": round(supervision_resolved / supervision_total * 100, 2) if supervision_total > 0 else 0,
+            "avg_processing_hours": avg_supervision_hours,
+            "processing_count": len(supervision_durations)
+        },
+        "community_timeout_heatmap": community_timeout_heatmap,
+        "high_risk_pending_orders": {
+            "total": len(high_risk_pending),
+            "items": high_risk_pending
+        },
+        "service_type_sla_stats": service_type_sla_stats
+    }
+
+    return success_response(data=result)
+
+
+@router.get("/sla-dashboard", response_model=ApiResponse)
+def get_sla_dashboard(
+    days: int = Query(30, ge=1, le=365, description="统计天数"),
+    db: Session = Depends(get_db)
+):
+    start_date = datetime.now() - timedelta(days=days)
+    all_orders = db.query(WorkOrder).filter(WorkOrder.created_at >= start_date).all()
+    sla_configs = db.query(SLAConfig).filter(SLAConfig.is_active == True).all()
+
+    completed_orders = [o for o in all_orders if o.status in [OrderStatus.COMPLETED, OrderStatus.CLOSED]]
+
+    overall_sla_met = len([o for o in completed_orders if o.sla_achieved == True])
+    overall_sla_total = len([o for o in completed_orders if o.sla_deadline])
+
+    sla_by_service = []
+    for config in sla_configs:
+        type_orders = [o for o in all_orders if o.service_type == config.service_type]
+        type_completed = [o for o in type_orders if o.status in [OrderStatus.COMPLETED, OrderStatus.CLOSED]]
+        type_sla_met = len([o for o in type_completed if o.sla_achieved == True])
+        type_sla_total = len([o for o in type_completed if o.sla_deadline])
+
+        sla_by_service.append({
+            "service_type": config.service_type.value,
+            "response_hours": config.response_hours,
+            "resolution_hours": config.resolution_hours,
+            "first_response_hours": config.first_response_hours,
+            "total_orders": len(type_orders),
+            "completed_orders": len(type_completed),
+            "sla_met": type_sla_met,
+            "sla_total": type_sla_total,
+            "achievement_rate": round(type_sla_met / type_sla_total * 100, 2) if type_sla_total > 0 else 0
+        })
+
+    sla_trend = []
+    for i in range(min(days, 30)):
+        day_start = datetime.now() - timedelta(days=days - i)
+        day_end = day_start + timedelta(days=1)
+        day_orders = [o for o in completed_orders if day_start <= o.created_at < day_end]
+        day_sla_met = len([o for o in day_orders if o.sla_achieved == True])
+        day_sla_total = len([o for o in day_orders if o.sla_deadline])
+        sla_trend.append({
+            "date": day_start.strftime("%Y-%m-%d"),
+            "completed_orders": len(day_orders),
+            "sla_met": day_sla_met,
+            "achievement_rate": round(day_sla_met / day_sla_total * 100, 2) if day_sla_total > 0 else 0
+        })
+
+    return success_response(data={
+        "statistic_days": days,
+        "overall": {
+            "total_orders": len(all_orders),
+            "completed_orders": len(completed_orders),
+            "sla_eligible": overall_sla_total,
+            "sla_met": overall_sla_met,
+            "achievement_rate": round(overall_sla_met / overall_sla_total * 100, 2) if overall_sla_total > 0 else 0
+        },
+        "by_service_type": sla_by_service,
+        "daily_trend": sla_trend
     })
