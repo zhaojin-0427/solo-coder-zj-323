@@ -95,42 +95,60 @@ def get_elderly_aggregation(
 
 
 def detect_duplicate_requests(db: Session, elderly_id: int, days: int) -> list:
+    from app.models import DuplicateSuggestion, MergeStatus
+
     start_date = datetime.now() - timedelta(days=days)
     orders = db.query(WorkOrder).filter(
         WorkOrder.elderly_id == elderly_id,
-        WorkOrder.created_at >= start_date
+        WorkOrder.created_at >= start_date,
+        WorkOrder.master_order_id == None
     ).order_by(WorkOrder.created_at.desc()).all()
-    
+
+    confirmed_pairs = set()
+    confirmed = db.query(DuplicateSuggestion).filter(
+        DuplicateSuggestion.elderly_id == elderly_id,
+        DuplicateSuggestion.status == MergeStatus.CONFIRMED
+    ).all()
+    for c in confirmed:
+        confirmed_pairs.add((c.master_order_id, c.slave_order_id))
+        confirmed_pairs.add((c.slave_order_id, c.master_order_id))
+
     duplicates = []
     service_type_groups = defaultdict(list)
-    
+
     for order in orders:
         service_type_groups[order.service_type.value].append(order)
-    
+
     for service_type, type_orders in service_type_groups.items():
         if len(type_orders) >= 2:
             for i in range(len(type_orders)):
                 for j in range(i + 1, len(type_orders)):
-                    time_diff = abs((type_orders[i].created_at - type_orders[j].created_at).total_seconds())
+                    order_i = type_orders[i]
+                    order_j = type_orders[j]
+
+                    if (order_i.id, order_j.id) in confirmed_pairs:
+                        continue
+
+                    time_diff = abs((order_i.created_at - order_j.created_at).total_seconds())
                     if time_diff <= 7 * 24 * 3600:
                         duplicates.append({
                             "service_type": service_type,
                             "order_1": {
-                                "id": type_orders[i].id,
-                                "order_no": type_orders[i].order_no,
-                                "created_at": type_orders[i].created_at,
-                                "status": type_orders[i].status
+                                "id": order_i.id,
+                                "order_no": order_i.order_no,
+                                "created_at": order_i.created_at,
+                                "status": order_i.status
                             },
                             "order_2": {
-                                "id": type_orders[j].id,
-                                "order_no": type_orders[j].order_no,
-                                "created_at": type_orders[j].created_at,
-                                "status": type_orders[j].status
+                                "id": order_j.id,
+                                "order_no": order_j.order_no,
+                                "created_at": order_j.created_at,
+                                "status": order_j.status
                             },
                             "time_diff_hours": round(time_diff / 3600, 2),
                             "description": f"7天内重复申请{service_type}服务，间隔{round(time_diff / 3600, 1)}小时"
                         })
-    
+
     return duplicates
 
 
@@ -347,7 +365,10 @@ def get_follow_up_suggestions(
 ):
     query = db.query(ElderlyProfile)
     if risk_level:
-        query = query.filter(ElderlyProfile.risk_level == risk_level)
+        try:
+            query = query.filter(ElderlyProfile.risk_level == RiskLevel(risk_level))
+        except ValueError:
+            return error_response(code=400, message=f"无效的风险等级值: {risk_level}")
     if community:
         query = query.filter(ElderlyProfile.community == community)
     
@@ -436,7 +457,10 @@ def get_advanced_statistics(
     if community:
         order_query = order_query.join(ElderlyProfile).filter(ElderlyProfile.community == community)
     if service_type:
-        order_query = order_query.filter(WorkOrder.service_type == service_type)
+        try:
+            order_query = order_query.filter(WorkOrder.service_type == ServiceType(service_type))
+        except ValueError:
+            return error_response(code=400, message=f"无效的服务类型: {service_type}")
 
     all_orders = order_query.all()
 

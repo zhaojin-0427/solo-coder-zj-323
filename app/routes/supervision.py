@@ -228,7 +228,7 @@ def list_sla_configs(
         query = query.filter(SLAConfig.is_active == is_active)
 
     configs = query.order_by(SLAConfig.id.asc()).all()
-    return success_response(data={"total": len(configs), "items": configs})
+    return success_response(data={"total": len(configs), "items": orm_to_dict(configs)})
 
 
 @router.get("/sla-config/{config_id}", response_model=ApiResponse[SLAConfigResponse])
@@ -279,7 +279,7 @@ def list_community_calendars(
         query = query.filter(CommunityCalendar.community.like(f"%{community}%"))
 
     calendars = query.order_by(CommunityCalendar.id.asc()).all()
-    return success_response(data={"total": len(calendars), "items": calendars})
+    return success_response(data={"total": len(calendars), "items": orm_to_dict(calendars)})
 
 
 @router.put("/community-calendar/{calendar_id}", response_model=ApiResponse[CommunityCalendarResponse])
@@ -313,16 +313,18 @@ def list_holidays(
     month: Optional[int] = Query(None, ge=1, le=12, description="月份筛选"),
     db: Session = Depends(get_db)
 ):
+    from sqlalchemy import func
+
     query = db.query(HolidayRecord)
     if community:
         query = query.filter(HolidayRecord.community == community)
     if year:
-        query = query.filter(db.extract('year', HolidayRecord.holiday_date) == year)
+        query = query.filter(func.strftime('%Y', HolidayRecord.holiday_date) == str(year))
     if month:
-        query = query.filter(db.extract('month', HolidayRecord.holiday_date) == month)
+        query = query.filter(func.strftime('%m', HolidayRecord.holiday_date) == f"{month:02d}")
 
     holidays = query.order_by(HolidayRecord.holiday_date.asc()).all()
-    return success_response(data={"total": len(holidays), "items": holidays})
+    return success_response(data={"total": len(holidays), "items": orm_to_dict(holidays)})
 
 
 @router.put("/holidays/{holiday_id}", response_model=ApiResponse[HolidayRecordResponse])
@@ -375,6 +377,8 @@ def detect_duplicate_requests_for_window(db: Session, elderly_id: int, service_t
                     ((DuplicateSuggestion.master_order_id == orders[slave_idx].id) &
                      (DuplicateSuggestion.slave_order_id == orders[master_idx].id))
                 ).first()
+                if existing and existing.status == MergeStatus.CONFIRMED:
+                    continue
                 if not existing:
                     suggestion = DuplicateSuggestion(
                         master_order_id=orders[master_idx].id,
@@ -432,11 +436,17 @@ def list_duplicate_suggestions(
 ):
     query = db.query(DuplicateSuggestion)
     if status:
-        query = query.filter(DuplicateSuggestion.status == status)
+        try:
+            query = query.filter(DuplicateSuggestion.status == MergeStatus(status))
+        except ValueError:
+            return error_response(code=400, message=f"无效的状态值: {status}")
     if elderly_id:
         query = query.filter(DuplicateSuggestion.elderly_id == elderly_id)
     if service_type:
-        query = query.filter(DuplicateSuggestion.service_type == service_type)
+        try:
+            query = query.filter(DuplicateSuggestion.service_type == ServiceType(service_type))
+        except ValueError:
+            return error_response(code=400, message=f"无效的服务类型: {service_type}")
     if time_window_days:
         query = query.filter(DuplicateSuggestion.time_window_days == time_window_days)
 
@@ -621,7 +631,10 @@ def list_supervision_records(
     if work_order_id:
         query = query.filter(SupervisionRecord.work_order_id == work_order_id)
     if status:
-        query = query.filter(SupervisionRecord.status == status)
+        try:
+            query = query.filter(SupervisionRecord.status == SupervisionStatus(status))
+        except ValueError:
+            return error_response(code=400, message=f"无效的状态值: {status}")
     if is_visited is not None:
         query = query.filter(SupervisionRecord.is_visited == is_visited)
 
@@ -634,7 +647,7 @@ def list_supervision_records(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": records
+        "items": orm_to_dict(records)
     })
 
 
@@ -696,7 +709,7 @@ def list_follow_up_plans(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": plans
+        "items": orm_to_dict(plans)
     })
 
 
@@ -760,9 +773,15 @@ def list_visit_records(
     if work_order_id:
         query = query.filter(VisitRecord.work_order_id == work_order_id)
     if visit_status:
-        query = query.filter(VisitRecord.visit_status == visit_status)
+        try:
+            query = query.filter(VisitRecord.visit_status == VisitStatus(visit_status))
+        except ValueError:
+            return error_response(code=400, message=f"无效的回访状态值: {visit_status}")
     if visit_result:
-        query = query.filter(VisitRecord.visit_result == visit_result)
+        try:
+            query = query.filter(VisitRecord.visit_result == VisitResult(visit_result))
+        except ValueError:
+            return error_response(code=400, message=f"无效的回访结果值: {visit_result}")
     if archived is not None:
         query = query.filter(VisitRecord.archived == archived)
 
@@ -775,7 +794,7 @@ def list_visit_records(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": records
+        "items": orm_to_dict(records)
     })
 
 
@@ -931,11 +950,17 @@ def get_high_risk_orders(
     )
 
     if risk_level:
-        query = query.filter(WorkOrder.supervision_risk_level == risk_level)
+        try:
+            query = query.filter(WorkOrder.supervision_risk_level == RiskLevel(risk_level))
+        except ValueError:
+            return error_response(code=400, message=f"无效的风险等级值: {risk_level}")
     if community:
         query = query.join(ElderlyProfile).filter(ElderlyProfile.community == community)
     if service_type:
-        query = query.filter(WorkOrder.service_type == service_type)
+        try:
+            query = query.filter(WorkOrder.service_type == ServiceType(service_type))
+        except ValueError:
+            return error_response(code=400, message=f"无效的服务类型: {service_type}")
     if only_timeout:
         query = query.filter(WorkOrder.is_timeout == 1)
 
