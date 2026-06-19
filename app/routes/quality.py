@@ -310,6 +310,9 @@ def generate_evaluation_task(request: EvaluationTaskGenerateRequest, db: Session
     if not order:
         return error_response(code=404, message="工单不存在")
 
+    if order.status not in [OrderStatus.COMPLETED, OrderStatus.INCOMPLETE, OrderStatus.CLOSED]:
+        return error_response(code=400, message=f"当前工单状态为{order.status.value}，仅已完成、未完成或已关闭的工单可生成评价任务")
+
     existing = db.query(EvaluationTask).filter(
         EvaluationTask.work_order_id == request.work_order_id,
         EvaluationTask.source == request.source
@@ -365,6 +368,16 @@ def create_evaluation_task(task_data: EvaluationTaskCreate, db: Session = Depend
     order = db.query(WorkOrder).filter(WorkOrder.id == task_data.work_order_id).first()
     if not order:
         return error_response(code=404, message="工单不存在")
+
+    if order.status not in [OrderStatus.COMPLETED, OrderStatus.INCOMPLETE, OrderStatus.CLOSED]:
+        return error_response(code=400, message=f"当前工单状态为{order.status.value}，仅已完成、未完成或已关闭的工单可生成评价任务")
+
+    existing = db.query(EvaluationTask).filter(
+        EvaluationTask.work_order_id == task_data.work_order_id,
+        EvaluationTask.source == task_data.source
+    ).first()
+    if existing:
+        return error_response(code=400, message="该工单已生成同来源评价任务")
 
     if task_data.template_id:
         template = db.query(EvaluationTemplate).filter(EvaluationTemplate.id == task_data.template_id).first()
@@ -532,6 +545,9 @@ def submit_feedback(feedback_data: SatisfactionFeedbackSubmit, db: Session = Dep
         if not indicator:
             continue
         max_score = indicator.max_score or 5.0
+        if item.score < 0 or item.score > max_score:
+            db.rollback()
+            return error_response(code=400, message=f"指标「{indicator.name}」得分必须在 0 到 {max_score} 之间，当前得分为 {item.score}")
         weight = indicator.weight or 1.0
         weighted_score = (item.score / max_score) * weight * 5.0
         indicator_score = IndicatorScore(
@@ -1360,7 +1376,7 @@ def get_quality_statistics(
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     db: Session = Depends(get_db)
 ):
-    from sqlalchemy import func, and_
+    from sqlalchemy import func, and_, case
 
     base_query = db.query(EvaluationTask).filter(
         EvaluationTask.overall_score.isnot(None)
@@ -1424,7 +1440,7 @@ def get_quality_statistics(
         EvaluationTask.assignee_name,
         func.count(EvaluationTask.id),
         func.avg(EvaluationTask.overall_score),
-        func.sum(func.case((EvaluationTask.overall_score < 3.0, 1), else_=0))
+        func.sum(case((EvaluationTask.overall_score < 3.0, 1), else_=0))
     ).filter(
         EvaluationTask.assignee_name.isnot(None),
         EvaluationTask.id.in_([t.id for t in base_query.all()])
