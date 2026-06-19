@@ -112,6 +112,55 @@ class DispatchType(str, enum.Enum):
     REASSIGN = "reassign"
 
 
+class EvaluationTaskStatus(str, enum.Enum):
+    PENDING = "pending"
+    ELDERLY_SUBMITTED = "elderly_submitted"
+    STAFF_SUBMITTED = "staff_submitted"
+    REVIEWED = "reviewed"
+    CLOSED = "closed"
+
+
+class EvaluationSource(str, enum.Enum):
+    ORDER_COMPLETION = "order_completion"
+    VISIT_ARCHIVE = "visit_archive"
+    MANUAL = "manual"
+
+
+class FeedbackSubmitterType(str, enum.Enum):
+    ELDERLY = "elderly"
+    CONTACT = "contact"
+
+
+class AbnormalType(str, enum.Enum):
+    LOW_SATISFACTION = "low_satisfaction"
+    NO_VISIT = "no_visit"
+    REPEAT_LOW_SCORE = "repeat_low_score"
+    STAFF_CONTINUOUS_ABNORMAL = "staff_continuous_abnormal"
+    MULTIPLE_COMPLAINTS = "multiple_complaints"
+
+
+class AbnormalStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
+class RectificationStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    REVIEW_PASSED = "review_passed"
+    REVIEW_REJECTED = "review_rejected"
+    ARCHIVED = "archived"
+
+
+class ReviewResult(str, enum.Enum):
+    PASSED = "passed"
+    REJECTED = "rejected"
+    NEED_RECTIFICATION = "need_rectification"
+
+
 class ElderlyProfile(Base):
     __tablename__ = "elderly_profiles"
 
@@ -428,3 +477,238 @@ class DispatchRecord(Base):
     staff = relationship("ServiceStaff", back_populates="dispatch_records", foreign_keys=[staff_id])
     original_staff = relationship("ServiceStaff", foreign_keys=[original_staff_id])
     work_order = relationship("WorkOrder", foreign_keys=[work_order_id])
+
+
+class LowScoreReason(Base):
+    __tablename__ = "low_score_reasons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(50), unique=True, index=True, nullable=False, comment="原因编码")
+    name = Column(String(200), nullable=False, comment="原因名称")
+    category = Column(String(100), index=True, comment="分类")
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AbnormalTag(Base):
+    __tablename__ = "abnormal_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False, comment="标签名称")
+    code = Column(String(50), unique=True, index=True, nullable=False, comment="标签编码")
+    abnormal_type = Column(Enum(AbnormalType), index=True, comment="异常类型")
+    risk_level = Column(Enum(RiskLevel), default=RiskLevel.MEDIUM, comment="风险等级")
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class EvaluationTemplate(Base):
+    __tablename__ = "evaluation_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False, comment="模板名称")
+    service_type = Column(Enum(ServiceType), nullable=False, index=True, comment="适用服务类型")
+    description = Column(Text)
+    is_active = Column(Boolean, default=True, index=True)
+    is_default = Column(Boolean, default=False, comment="是否默认模板")
+    created_by = Column(String(100))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    indicators = relationship("EvaluationIndicator", back_populates="template", cascade="all, delete-orphan")
+    evaluation_tasks = relationship("EvaluationTask", back_populates="template")
+
+
+class EvaluationIndicator(Base):
+    __tablename__ = "evaluation_indicators"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("evaluation_templates.id"), nullable=False, index=True)
+    name = Column(String(200), nullable=False, comment="指标名称")
+    code = Column(String(50), index=True, comment="指标编码")
+    description = Column(Text)
+    weight = Column(Float, default=1.0, comment="权重")
+    sort_order = Column(Integer, default=0, comment="排序")
+    max_score = Column(Float, default=5.0, comment="满分")
+    is_required = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    template = relationship("EvaluationTemplate", back_populates="indicators")
+
+
+class EvaluationTask(Base):
+    __tablename__ = "evaluation_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_no = Column(String(50), unique=True, index=True, nullable=False, comment="任务编号")
+    work_order_id = Column(Integer, ForeignKey("work_orders.id"), nullable=False, index=True)
+    elderly_id = Column(Integer, ForeignKey("elderly_profiles.id"), nullable=False, index=True)
+    template_id = Column(Integer, ForeignKey("evaluation_templates.id"), nullable=False)
+    supervision_record_id = Column(Integer, ForeignKey("supervision_records.id"), index=True)
+    source = Column(Enum(EvaluationSource), default=EvaluationSource.ORDER_COMPLETION, index=True)
+    status = Column(Enum(EvaluationTaskStatus), default=EvaluationTaskStatus.PENDING, index=True)
+    assignee_name = Column(String(100), index=True)
+    assignee_phone = Column(String(20))
+    expire_time = Column(DateTime, index=True)
+    overall_score = Column(Float, comment="综合评分")
+    staff_self_score = Column(Float, comment="服务人员自评分")
+    reviewer_name = Column(String(100))
+    review_time = Column(DateTime)
+    review_remark = Column(Text)
+    is_abnormal = Column(Boolean, default=False, index=True)
+    abnormal_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    template = relationship("EvaluationTemplate", back_populates="evaluation_tasks")
+    work_order = relationship("WorkOrder")
+    elderly = relationship("ElderlyProfile")
+    supervision_record = relationship("SupervisionRecord")
+    feedbacks = relationship("SatisfactionFeedback", back_populates="evaluation_task", cascade="all, delete-orphan")
+    indicator_scores = relationship("IndicatorScore", back_populates="evaluation_task", cascade="all, delete-orphan")
+    self_evaluation = relationship("StaffSelfEvaluation", back_populates="evaluation_task", uselist=False, cascade="all, delete-orphan")
+    reviews = relationship("StaffReview", back_populates="evaluation_task", cascade="all, delete-orphan")
+    abnormal_warnings = relationship("AbnormalWarning", back_populates="evaluation_task", cascade="all, delete-orphan")
+    rectification_tasks = relationship("RectificationTask", back_populates="evaluation_task", cascade="all, delete-orphan")
+
+
+class IndicatorScore(Base):
+    __tablename__ = "indicator_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), nullable=False, index=True)
+    indicator_id = Column(Integer, ForeignKey("evaluation_indicators.id"), nullable=False, index=True)
+    indicator_name = Column(String(200), nullable=False)
+    score = Column(Float, nullable=False, comment="得分")
+    max_score = Column(Float, default=5.0)
+    weight = Column(Float, default=1.0)
+    weighted_score = Column(Float, comment="加权得分")
+    created_at = Column(DateTime, default=datetime.now)
+
+    evaluation_task = relationship("EvaluationTask", back_populates="indicator_scores")
+
+
+class SatisfactionFeedback(Base):
+    __tablename__ = "satisfaction_feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), nullable=False, index=True)
+    submitter_type = Column(Enum(FeedbackSubmitterType), nullable=False, comment="提交人类型")
+    submitter_name = Column(String(100), comment="提交人姓名")
+    submitter_phone = Column(String(20), comment="提交人电话")
+    submitter_relation = Column(String(50), comment="与老人关系")
+    overall_score = Column(Float, nullable=False, comment="总体满意度评分")
+    feedback_text = Column(Text, comment="文字反馈")
+    complaint_content = Column(Text, comment="投诉内容")
+    is_complaint = Column(Boolean, default=False, index=True)
+    low_score_reason_id = Column(Integer, ForeignKey("low_score_reasons.id"), index=True)
+    low_score_reason_detail = Column(String(500), comment="低分原因详情")
+    submit_time = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    evaluation_task = relationship("EvaluationTask", back_populates="feedbacks")
+    low_score_reason = relationship("LowScoreReason")
+
+
+class StaffSelfEvaluation(Base):
+    __tablename__ = "staff_self_evaluations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), nullable=False, index=True, unique=True)
+    staff_name = Column(String(100), nullable=False, index=True)
+    staff_phone = Column(String(20))
+    self_score = Column(Float, nullable=False, comment="自评分")
+    service_description = Column(Text, comment="服务说明")
+    difficulty_description = Column(Text, comment="服务难点说明")
+    improvement_suggestion = Column(Text, comment="改进建议")
+    submit_time = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    evaluation_task = relationship("EvaluationTask", back_populates="self_evaluation")
+
+
+class StaffReview(Base):
+    __tablename__ = "staff_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), nullable=False, index=True)
+    reviewer_name = Column(String(100), nullable=False)
+    reviewer_role = Column(String(50))
+    review_result = Column(Enum(ReviewResult), nullable=False, index=True)
+    review_score = Column(Float, comment="复核评分")
+    review_remark = Column(Text)
+    need_rectification = Column(Boolean, default=False, index=True)
+    rectification_requirement = Column(Text, comment="整改要求")
+    review_time = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    evaluation_task = relationship("EvaluationTask", back_populates="reviews")
+
+
+class AbnormalWarning(Base):
+    __tablename__ = "abnormal_warnings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    warning_no = Column(String(50), unique=True, index=True, nullable=False)
+    abnormal_type = Column(Enum(AbnormalType), nullable=False, index=True)
+    work_order_id = Column(Integer, ForeignKey("work_orders.id"), index=True)
+    elderly_id = Column(Integer, ForeignKey("elderly_profiles.id"), nullable=False, index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), index=True)
+    staff_name = Column(String(100), index=True)
+    tag_id = Column(Integer, ForeignKey("abnormal_tags.id"), index=True)
+    tag_name = Column(String(100))
+    risk_level = Column(Enum(RiskLevel), default=RiskLevel.MEDIUM, index=True)
+    title = Column(String(500), nullable=False)
+    description = Column(Text)
+    status = Column(Enum(AbnormalStatus), default=AbnormalStatus.PENDING, index=True)
+    triggered_by = Column(String(100), default="system")
+    trigger_time = Column(DateTime, default=datetime.now, index=True)
+    handler_name = Column(String(100))
+    handle_time = Column(DateTime)
+    handle_remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    work_order = relationship("WorkOrder")
+    elderly = relationship("ElderlyProfile")
+    evaluation_task = relationship("EvaluationTask", back_populates="abnormal_warnings")
+    tag = relationship("AbnormalTag")
+    rectification_tasks = relationship("RectificationTask", back_populates="abnormal_warning")
+
+
+class RectificationTask(Base):
+    __tablename__ = "rectification_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_no = Column(String(50), unique=True, index=True, nullable=False)
+    abnormal_warning_id = Column(Integer, ForeignKey("abnormal_warnings.id"), index=True)
+    evaluation_task_id = Column(Integer, ForeignKey("evaluation_tasks.id"), index=True)
+    work_order_id = Column(Integer, ForeignKey("work_orders.id"), index=True)
+    elderly_id = Column(Integer, ForeignKey("elderly_profiles.id"), index=True)
+    title = Column(String(500), nullable=False)
+    description = Column(Text)
+    responsible_person = Column(String(100), nullable=False, index=True)
+    responsible_phone = Column(String(20))
+    deadline = Column(DateTime, nullable=False, index=True)
+    status = Column(Enum(RectificationStatus), default=RectificationStatus.PENDING, index=True)
+    handle_description = Column(Text, comment="处理说明")
+    handle_evidence = Column(Text, comment="处理凭证")
+    completion_time = Column(DateTime)
+    reviewer_name = Column(String(100))
+    review_remark = Column(Text)
+    review_time = Column(DateTime)
+    archive_time = Column(DateTime)
+    is_overdue = Column(Boolean, default=False, index=True)
+    created_by = Column(String(100))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    abnormal_warning = relationship("AbnormalWarning", back_populates="rectification_tasks")
+    evaluation_task = relationship("EvaluationTask", back_populates="rectification_tasks")
+    work_order = relationship("WorkOrder")
+    elderly = relationship("ElderlyProfile")
