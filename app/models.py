@@ -57,6 +57,10 @@ class ProgressType(str, enum.Enum):
     VISIT_SCHEDULED = "visit_scheduled"
     VISIT_COMPLETED = "visit_completed"
     VISIT_SKIPPED = "visit_skipped"
+    DISPATCH_REASSIGNED = "dispatch_reassigned"
+    DISPATCH_CANCELLED = "dispatch_cancelled"
+    DISPATCH_RELEASED = "dispatch_released"
+    DISPATCH_CONFIRMED = "dispatch_confirmed"
 
 
 class MergeStatus(str, enum.Enum):
@@ -85,6 +89,27 @@ class VisitResult(str, enum.Enum):
     DISSATISFIED = "dissatisfied"
     NO_ANSWER = "no_answer"
     INACCESSIBLE = "inaccessible"
+
+
+class StaffStatus(str, enum.Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    ON_LEAVE = "on_leave"
+
+
+class DispatchStatus(str, enum.Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REASSIGNED = "reassigned"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    RELEASED = "released"
+
+
+class DispatchType(str, enum.Enum):
+    AUTO = "auto"
+    MANUAL = "manual"
+    REASSIGN = "reassign"
 
 
 class ElderlyProfile(Base):
@@ -293,3 +318,113 @@ class VisitRecord(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     work_order = relationship("WorkOrder", back_populates="visit_records")
+
+
+class ServiceStaff(Base):
+    __tablename__ = "service_staff"
+
+    id = Column(Integer, primary_key=True, index=True)
+    staff_no = Column(String(50), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False, index=True)
+    id_card = Column(String(18), unique=True, index=True)
+    gender = Column(Enum(ElderlyGender), default=ElderlyGender.OTHER)
+    age = Column(Integer)
+    phone = Column(String(20))
+    email = Column(String(100))
+    address = Column(String(500))
+    status = Column(Enum(StaffStatus), default=StaffStatus.ACTIVE, index=True)
+    position = Column(String(100), comment="职位")
+    department = Column(String(100), comment="所属部门")
+    daily_capacity = Column(Integer, default=8, comment="日服务容量（单/天）")
+    weekly_capacity = Column(Integer, default=40, comment="周服务容量（单/周）")
+    monthly_capacity = Column(Integer, default=160, comment="月服务容量（单/月）")
+    hire_date = Column(Date)
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    skills = relationship("StaffSkill", back_populates="staff", cascade="all, delete-orphan")
+    communities = relationship("StaffCommunity", back_populates="staff", cascade="all, delete-orphan")
+    schedules = relationship("StaffSchedule", back_populates="staff", cascade="all, delete-orphan")
+    dispatch_records = relationship("DispatchRecord", back_populates="staff", foreign_keys="DispatchRecord.staff_id")
+
+
+class StaffSkill(Base):
+    __tablename__ = "staff_skills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    staff_id = Column(Integer, ForeignKey("service_staff.id"), nullable=False, index=True)
+    skill_tag = Column(String(100), nullable=False, index=True, comment="技能标签，对应服务类型")
+    proficiency = Column(Integer, default=3, comment="熟练度 1-5")
+    is_certified = Column(Boolean, default=False, comment="是否持证")
+    cert_no = Column(String(100), comment="证书编号")
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+
+    staff = relationship("ServiceStaff", back_populates="skills")
+
+
+class StaffCommunity(Base):
+    __tablename__ = "staff_communities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    staff_id = Column(Integer, ForeignKey("service_staff.id"), nullable=False, index=True)
+    community = Column(String(100), nullable=False, index=True, comment="可服务社区")
+    is_primary = Column(Boolean, default=False, comment="是否主负责社区")
+    priority = Column(Integer, default=1, comment="优先级 1-5，1最高")
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+
+    staff = relationship("ServiceStaff", back_populates="communities")
+
+
+class StaffSchedule(Base):
+    __tablename__ = "staff_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    staff_id = Column(Integer, ForeignKey("service_staff.id"), nullable=False, index=True)
+    schedule_date = Column(Date, nullable=False, index=True, comment="排班日期")
+    shift_type = Column(String(50), default="day", comment="班次类型：早班/中班/晚班/全天")
+    start_time = Column(Time, nullable=False, comment="开始时间")
+    end_time = Column(Time, nullable=False, comment="结束时间")
+    is_available = Column(Boolean, default=True, comment="是否可派单")
+    capacity = Column(Integer, default=8, comment="当日可接单数")
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    staff = relationship("ServiceStaff", back_populates="schedules")
+
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
+
+
+class DispatchRecord(Base):
+    __tablename__ = "dispatch_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    work_order_id = Column(Integer, ForeignKey("work_orders.id"), nullable=False, index=True)
+    staff_id = Column(Integer, ForeignKey("service_staff.id"), nullable=False, index=True)
+    dispatch_type = Column(Enum(DispatchType), default=DispatchType.MANUAL, comment="派单类型")
+    dispatch_status = Column(Enum(DispatchStatus), default=DispatchStatus.PENDING, index=True)
+    match_score = Column(Float, default=0, comment="匹配度分数")
+    original_staff_id = Column(Integer, ForeignKey("service_staff.id"), nullable=True, comment="原接单人员ID（改派时）")
+    reassign_reason = Column(Text, comment="改派原因")
+    reassign_operator = Column(String(100), comment="改派操作人")
+    reassign_time = Column(DateTime, comment="改派时间")
+    cancel_reason = Column(Text, comment="取消原因")
+    cancel_operator = Column(String(100), comment="取消操作人")
+    cancel_time = Column(DateTime, comment="取消时间")
+    release_reason = Column(Text, comment="释放原因")
+    release_operator = Column(String(100), comment="释放操作人")
+    release_time = Column(DateTime, comment="释放时间")
+    confirm_operator = Column(String(100), comment="确认操作人")
+    confirm_time = Column(DateTime, comment="确认时间")
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    staff = relationship("ServiceStaff", back_populates="dispatch_records", foreign_keys=[staff_id])
+    original_staff = relationship("ServiceStaff", foreign_keys=[original_staff_id])
+    work_order = relationship("WorkOrder", foreign_keys=[work_order_id])

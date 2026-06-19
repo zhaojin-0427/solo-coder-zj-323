@@ -476,3 +476,274 @@ class AdvancedStatisticsRequest(BaseModel):
     community: Optional[str] = Field(None, description="社区")
     service_type: Optional[ServiceType] = Field(None, description="服务类型")
     risk_level: Optional[RiskLevel] = Field(None, description="风险等级")
+
+
+class ServiceStaffBase(BaseModel):
+    name: str = Field(..., max_length=100, description="服务人员姓名")
+    id_card: Optional[str] = Field(None, max_length=18, description="身份证号")
+    gender: Optional[ElderlyGender] = Field(None, description="性别")
+    age: Optional[int] = Field(None, ge=16, le=100, description="年龄")
+    phone: Optional[str] = Field(None, max_length=20, description="联系电话")
+    email: Optional[str] = Field(None, max_length=100, description="邮箱")
+    address: Optional[str] = Field(None, max_length=500, description="住址")
+    status: Optional[str] = Field("active", description="状态：active/inactive/on_leave")
+    position: Optional[str] = Field(None, max_length=100, description="职位")
+    department: Optional[str] = Field(None, max_length=100, description="所属部门")
+    daily_capacity: Optional[int] = Field(8, ge=1, le=100, description="日服务容量")
+    weekly_capacity: Optional[int] = Field(40, ge=1, le=500, description="周服务容量")
+    monthly_capacity: Optional[int] = Field(160, ge=1, le=2000, description="月服务容量")
+    hire_date: Optional[date] = Field(None, description="入职日期")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class ServiceStaffCreate(ServiceStaffBase):
+    pass
+
+
+class ServiceStaffUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    id_card: Optional[str] = Field(None, max_length=18)
+    gender: Optional[ElderlyGender] = None
+    age: Optional[int] = Field(None, ge=16, le=100)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = Field(None, max_length=100)
+    address: Optional[str] = Field(None, max_length=500)
+    status: Optional[str] = None
+    position: Optional[str] = Field(None, max_length=100)
+    department: Optional[str] = Field(None, max_length=100)
+    daily_capacity: Optional[int] = Field(None, ge=1, le=100)
+    weekly_capacity: Optional[int] = Field(None, ge=1, le=500)
+    monthly_capacity: Optional[int] = Field(None, ge=1, le=2000)
+    hire_date: Optional[date] = None
+    remark: Optional[str] = None
+
+
+class ServiceStaffResponse(ServiceStaffBase):
+    id: int
+    staff_no: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StaffSkillBase(BaseModel):
+    staff_id: int
+    skill_tag: str = Field(..., max_length=100, description="技能标签")
+    proficiency: Optional[int] = Field(3, ge=1, le=5, description="熟练度")
+    is_certified: Optional[bool] = Field(False, description="是否持证")
+    cert_no: Optional[str] = Field(None, max_length=100, description="证书编号")
+    remark: Optional[str] = None
+
+
+class StaffSkillCreate(StaffSkillBase):
+    pass
+
+
+class StaffSkillUpdate(BaseModel):
+    skill_tag: Optional[str] = None
+    proficiency: Optional[int] = Field(None, ge=1, le=5)
+    is_certified: Optional[bool] = None
+    cert_no: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class StaffSkillResponse(StaffSkillBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StaffCommunityBase(BaseModel):
+    staff_id: int
+    community: str = Field(..., max_length=100, description="社区名称")
+    is_primary: Optional[bool] = Field(False, description="是否主负责社区")
+    priority: Optional[int] = Field(1, ge=1, le=5, description="优先级")
+    remark: Optional[str] = None
+
+
+class StaffCommunityCreate(StaffCommunityBase):
+    pass
+
+
+class StaffCommunityUpdate(BaseModel):
+    community: Optional[str] = None
+    is_primary: Optional[bool] = None
+    priority: Optional[int] = Field(None, ge=1, le=5)
+    remark: Optional[str] = None
+
+
+class StaffCommunityResponse(StaffCommunityBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StaffScheduleBase(BaseModel):
+    staff_id: int
+    schedule_date: date = Field(..., description="排班日期")
+    shift_type: Optional[str] = Field("day", max_length=50, description="班次类型")
+    start_time: time = Field(..., description="开始时间")
+    end_time: time = Field(..., description="结束时间")
+    is_available: Optional[bool] = Field(True, description="是否可派单")
+    capacity: Optional[int] = Field(8, ge=0, le=100, description="当日可接单数")
+    remark: Optional[str] = None
+
+
+class StaffScheduleCreate(StaffScheduleBase):
+    pass
+
+
+class StaffScheduleUpdate(BaseModel):
+    shift_type: Optional[str] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    is_available: Optional[bool] = None
+    capacity: Optional[int] = Field(None, ge=0, le=100)
+    remark: Optional[str] = None
+
+
+class StaffScheduleResponse(StaffScheduleBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DispatchRecordBase(BaseModel):
+    work_order_id: int
+    staff_id: int
+    dispatch_type: Optional[str] = Field("manual", description="派单类型")
+    match_score: Optional[float] = Field(0, description="匹配度分数")
+    remark: Optional[str] = None
+
+
+class DispatchRecordCreate(DispatchRecordBase):
+    pass
+
+
+class DispatchReassignRequest(BaseModel):
+    new_staff_id: int = Field(..., description="新的接单人员ID")
+    reassign_reason: str = Field(..., description="改派原因")
+    operator: Optional[str] = Field(None, max_length=100, description="操作人")
+    remark: Optional[str] = None
+
+
+class DispatchCancelRequest(BaseModel):
+    cancel_reason: str = Field(..., description="取消原因")
+    operator: Optional[str] = Field(None, max_length=100, description="操作人")
+
+
+class DispatchReleaseRequest(BaseModel):
+    release_reason: str = Field(..., description="释放原因")
+    operator: Optional[str] = Field(None, max_length=100, description="操作人")
+
+
+class DispatchConfirmRequest(BaseModel):
+    operator: Optional[str] = Field(None, max_length=100, description="操作人")
+
+
+class DispatchRecordResponse(BaseModel):
+    id: int
+    work_order_id: int
+    staff_id: int
+    staff_name: Optional[str] = None
+    dispatch_type: Optional[str] = None
+    dispatch_status: Optional[str] = None
+    match_score: Optional[float] = None
+    original_staff_id: Optional[int] = None
+    original_staff_name: Optional[str] = None
+    reassign_reason: Optional[str] = None
+    reassign_operator: Optional[str] = None
+    reassign_time: Optional[datetime] = None
+    cancel_reason: Optional[str] = None
+    cancel_operator: Optional[str] = None
+    cancel_time: Optional[datetime] = None
+    release_reason: Optional[str] = None
+    release_operator: Optional[str] = None
+    release_time: Optional[datetime] = None
+    confirm_operator: Optional[str] = None
+    confirm_time: Optional[datetime] = None
+    remark: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CandidateStaffItem(BaseModel):
+    staff_id: int
+    staff_no: str
+    name: str
+    phone: Optional[str] = None
+    position: Optional[str] = None
+    match_score: float
+    skill_match: bool
+    community_match: bool
+    time_available: bool
+    current_load: int
+    capacity: int
+    load_rate: float
+    historical_services: int
+    is_certified: bool
+    primary_community: Optional[str] = None
+
+
+class CandidateStaffListResponse(BaseModel):
+    total: int
+    order_id: int
+    order_no: str
+    items: List[CandidateStaffItem]
+
+
+class ResourceSupplyGapItem(BaseModel):
+    community: str
+    total_demand: int
+    total_supply: int
+    gap: int
+    gap_rate: float
+
+
+class ServiceTypeCoverageItem(BaseModel):
+    service_type: str
+    total_staff: int
+    coverage_rate: float
+
+
+class StaffLoadRankingItem(BaseModel):
+    staff_id: int
+    staff_name: str
+    community: Optional[str] = None
+    completed_orders: int
+    in_progress_orders: int
+    total_load: int
+    capacity: int
+    load_rate: float
+
+
+class CapacityWarningItem(BaseModel):
+    date: str
+    total_capacity: int
+    allocated_count: int
+    remaining_capacity: int
+    utilization_rate: float
+    warning_level: str
+
+
+class ResourceDashboardResponse(BaseModel):
+    summary: dict
+    supply_gap_by_community: List[ResourceSupplyGapItem]
+    service_type_coverage: List[ServiceTypeCoverageItem]
+    staff_load_ranking: List[StaffLoadRankingItem]
+    unmatched_orders: List[dict]
+    conflict_dispatches: List[dict]
+    capacity_warning_7days: List[CapacityWarningItem]
+    filters: dict
