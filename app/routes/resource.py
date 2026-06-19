@@ -675,8 +675,20 @@ def get_candidate_staff(
         ServiceStaff.status == StaffStatus.ACTIVE
     ).all()
     
+    community = elderly.community or ""
+    service_type = order.service_type.value
+    
     candidates = []
+    filtered_out_count = 0
     for staff in active_staff:
+        if not check_skill_match(db, staff.id, service_type):
+            filtered_out_count += 1
+            continue
+        
+        if community and not check_community_match(db, staff.id, community):
+            filtered_out_count += 1
+            continue
+        
         match_result = calculate_match_score(db, staff, order, elderly)
         
         candidates.append({
@@ -702,6 +714,8 @@ def get_candidate_staff(
     
     return success_response(data={
         "total": len(top_candidates),
+        "total_candidates": len(candidates),
+        "filtered_out_count": filtered_out_count,
         "order_id": order.id,
         "order_no": order.order_no,
         "items": top_candidates
@@ -1008,19 +1022,24 @@ def release_dispatch(
     dispatch.release_operator = release_data.operator
     dispatch.release_time = datetime.now()
     
-    if order.status == OrderStatus.IN_PROGRESS:
-        order.status = OrderStatus.ASSIGNED
+    order.assignee_name = None
+    order.assignee_phone = None
+    order.status = OrderStatus.PENDING
     
     add_progress_record(
-        db, dispatch.work_order_id, ProgressType.CREATED,
+        db, dispatch.work_order_id, ProgressType.DISPATCH_RELEASED,
         operator_name=release_data.operator or "系统",
         operator_role="staff",
-        remark=f"释放资源占用，原因：{release_data.release_reason}"
+        remark=f"释放资源占用，原因：{release_data.release_reason}；工单已恢复为待派单状态"
     )
     
     db.commit()
     
-    return success_response(message="资源已释放")
+    result = orm_to_dict(dispatch)
+    result["order_status"] = order.status.value
+    result["assignee_name"] = order.assignee_name
+    
+    return success_response(data=result, message="资源已释放，工单已恢复为待派单状态")
 
 
 @router.get("/dispatches", response_model=ApiResponse)
@@ -1145,7 +1164,23 @@ def resource_dashboard(
         staff_query = staff_query.filter(ServiceStaff.name.like(f"%{staff_name}%"))
     if community:
         staff_query = staff_query.join(StaffCommunity).filter(StaffCommunity.community == community)
-    active_staff_count = staff_query.count()
+    filtered_staff_list = staff_query.all()
+    target_staff_ids = [s.id for s in filtered_staff_list]
+    active_staff_count = len(target_staff_ids)
+    
+    target_staff_communities = set()
+    if staff_name:
+        staff_comm_records = db.query(StaffCommunity).filter(
+            StaffCommunity.staff_id.in_(target_staff_ids)
+        ).all()
+        target_staff_communities = {sc.community for sc in staff_comm_records}
+    
+    target_staff_skills = set()
+    if staff_name:
+        staff_skill_records = db.query(StaffSkill).filter(
+            StaffSkill.staff_id.in_(target_staff_ids)
+        ).all()
+        target_staff_skills = {ss.skill_tag for ss in staff_skill_records}
     
     order_query = db.query(WorkOrder).filter(
         WorkOrder.created_at >= start_dt,
@@ -1163,13 +1198,32 @@ def resource_dashboard(
             order_query = order_query.filter(WorkOrder.supervision_risk_level == RiskLevel(risk_level))
         except ValueError:
             return error_response(code=400, message=f"无效的风险等级: {risk_level}")
-    period_orders = order_query.count()
+    
+    if staff_name:
+        def order_matches_target_staff(ord_obj, eld):
+            ord_community = eld.community if eld else ""
+            ord_service_type = ord_obj.service_type.value
+            if ord_community and target_staff_communities and ord_community not in target_staff_communities:
+                return False
+            if target_staff_skills and ord_service_type not in target_staff_skills:
+                return False
+            return True
+        
+        all_period_orders = order_query.all()
+        period_orders = 0
+        for ord_obj in all_period_orders:
+            eld = db.query(ElderlyProfile).filter(ElderlyProfile.id == ord_obj.elderly_id).first()
+            if order_matches_target_staff(ord_obj, eld):
+                period_orders += 1
+    else:
+        period_orders = order_query.count()
     
     summary = {
         "total_active_staff": active_staff_count,
         "total_pending_orders": total_pending_orders,
         "total_in_service": total_assigned_orders,
         "period_orders": period_orders,
+        "staff_name_filter_applied": staff_name is not None,
         "statistic_range": {
             "start_date": start_dt.strftime("%Y-%m-%d"),
             "end_date": (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1185,6 +1239,9 @@ def resource_dashboard(
     if community:
         community_list = [c for c in community_list if c == community]
     
+    if staff_name and target_staff_communities:
+        community_list = [c for c in community_list if c in target_staff_communities]
+    
     for comm in community_list:
         demand_q = db.query(WorkOrder).filter(WorkOrder.status == OrderStatus.PENDING)
         demand_q = demand_q.join(ElderlyProfile).filter(ElderlyProfile.community == comm)
@@ -1193,10 +1250,33 @@ def resource_dashboard(
                 demand_q = demand_q.filter(WorkOrder.service_type == ServiceType(service_type))
             except ValueError:
                 pass
-        total_demand = demand_q.count()
+        
+        if staff_name:
+            demand_orders = demand_q.all()
+            total_demand = 0
+            for ord_obj in demand_orders:
+                if not target_staff_skills or ord_obj.service_type.value in target_staff_skills:
+                    total_demand += 1
+        else:
+            total_demand = demand_q.count()
         
         supply_q = db.query(ServiceStaff).filter(ServiceStaff.status == StaffStatus.ACTIVE)
         supply_q = supply_q.join(StaffCommunity).filter(StaffCommunity.community == comm)
+        if staff_name:
+            if target_staff_ids:
+                supply_q = supply_q.filter(ServiceStaff.id.in_(target_staff_ids))
+            else:
+                total_supply = 0
+                gap = total_demand - total_supply
+                gap_rate = round(gap / total_demand * 100, 2) if total_demand > 0 else 0
+                supply_gap_by_community.append({
+                    "community": comm,
+                    "total_demand": total_demand,
+                    "total_supply": total_supply,
+                    "gap": max(gap, 0),
+                    "gap_rate": max(gap_rate, 0)
+                })
+                continue
         total_supply = supply_q.count()
         
         gap = total_demand - total_supply
@@ -1218,13 +1298,22 @@ def resource_dashboard(
         if service_type and st_str != service_type:
             continue
         
-        staff_with_skill = db.query(StaffSkill).filter(
+        skill_q = db.query(StaffSkill).filter(
             StaffSkill.skill_tag == st_str
-        ).distinct(StaffSkill.staff_id).count()
+        )
+        if staff_name:
+            if target_staff_ids:
+                skill_q = skill_q.filter(StaffSkill.staff_id.in_(target_staff_ids))
+            else:
+                service_type_coverage.append({
+                    "service_type": st_str,
+                    "total_staff": 0,
+                    "coverage_rate": 0
+                })
+                continue
+        staff_with_skill = skill_q.distinct(StaffSkill.staff_id).count()
         
-        total_active = db.query(ServiceStaff).filter(
-            ServiceStaff.status == StaffStatus.ACTIVE
-        ).count()
+        total_active = active_staff_count
         
         coverage_rate = round(staff_with_skill / total_active * 100, 2) if total_active > 0 else 0
         
@@ -1235,9 +1324,7 @@ def resource_dashboard(
         })
     
     staff_load_ranking = []
-    staffs = db.query(ServiceStaff).filter(ServiceStaff.status == StaffStatus.ACTIVE).all()
-    if staff_name:
-        staffs = [s for s in staffs if staff_name in s.name]
+    staffs = filtered_staff_list
     
     for staff in staffs:
         today_load = get_staff_daily_load(db, staff.id, today)
@@ -1296,6 +1383,15 @@ def resource_dashboard(
     unmatched = unmatched_query.order_by(WorkOrder.supervision_priority_score.desc()).all()
     for order in unmatched[:50]:
         elderly = db.query(ElderlyProfile).filter(ElderlyProfile.id == order.elderly_id).first()
+        
+        if staff_name:
+            ord_community = elderly.community if elderly else ""
+            ord_service_type = order.service_type.value
+            if ord_community and target_staff_communities and ord_community not in target_staff_communities:
+                continue
+            if target_staff_skills and ord_service_type not in target_staff_skills:
+                continue
+        
         unmatched_orders.append({
             "order_id": order.id,
             "order_no": order.order_no,
@@ -1311,9 +1407,17 @@ def resource_dashboard(
         })
     
     conflict_dispatches = []
-    all_confirmed = db.query(DispatchRecord).filter(
+    all_confirmed_q = db.query(DispatchRecord).filter(
         DispatchRecord.dispatch_status.in_([DispatchStatus.CONFIRMED, DispatchStatus.PENDING])
-    ).all()
+    )
+    if staff_name:
+        if target_staff_ids:
+            all_confirmed_q = all_confirmed_q.filter(DispatchRecord.staff_id.in_(target_staff_ids))
+            all_confirmed = all_confirmed_q.all()
+        else:
+            all_confirmed = []
+    else:
+        all_confirmed = all_confirmed_q.all()
     
     staff_time_slots = defaultdict(list)
     for d in all_confirmed:
@@ -1371,20 +1475,31 @@ def resource_dashboard(
         target_date = today + timedelta(days=i)
         date_str = target_date.isoformat()
         
-        day_schedules = db.query(StaffSchedule).filter(
+        day_schedules_q = db.query(StaffSchedule).filter(
             StaffSchedule.schedule_date == target_date,
             StaffSchedule.is_available == True
-        ).all()
+        )
+        if staff_name:
+            if target_staff_ids:
+                day_schedules_q = day_schedules_q.filter(StaffSchedule.staff_id.in_(target_staff_ids))
+            else:
+                capacity_warning_7days.append({
+                    "date": date_str,
+                    "total_capacity": 0,
+                    "allocated_count": 0,
+                    "remaining_capacity": 0,
+                    "utilization_rate": 0,
+                    "warning_level": "low"
+                })
+                continue
+        day_schedules = day_schedules_q.all()
         
         total_capacity = sum(s.capacity for s in day_schedules)
         if total_capacity == 0:
-            active_staff = db.query(ServiceStaff).filter(
-                ServiceStaff.status == StaffStatus.ACTIVE
-            ).count()
-            total_capacity = active_staff * 8
+            total_capacity = active_staff_count * 8
         
         allocated_count = 0
-        all_staff = db.query(ServiceStaff).filter(ServiceStaff.status == StaffStatus.ACTIVE).all()
+        all_staff = filtered_staff_list
         for s in all_staff:
             allocated_count += get_staff_daily_load(db, s.id, target_date)
         
